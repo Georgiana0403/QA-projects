@@ -33,27 +33,22 @@ resource "aws_vpc" "main_vpc" {
 resource "aws_subnet" "public_subnets" {
   count             = 2
   vpc_id            = aws_vpc.main_vpc.id
-  cidr_block        = "10.10.${count.index + 1}.0/24"
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-
-  tags = {
-    Name = "${var.app_name}-public-subnet-${count.index + 1}"
-  }
-
+  cidr_block        = cidrsubnet(aws_vpc.main_vpc.cidr_block, 8, count.index)
   map_public_ip_on_launch = true
+  availability_zone = data.aws_availability_zones.available.names[count.index]
 }
 
-# Private Subnets
 resource "aws_subnet" "private_subnets" {
   count             = 2
   vpc_id            = aws_vpc.main_vpc.id
-  cidr_block        = "10.10.${count.index + 101}.0/24"
+  cidr_block        = cidrsubnet(aws_vpc.main_vpc.cidr_block, 8, count.index + 2)
   availability_zone = data.aws_availability_zones.available.names[count.index]
-
-  tags = {
-    Name = "${var.app_name}-private-subnet-${count.index + 1}"
-  }
 }
+locals {
+  public_subnet_ids  = aws_subnet.public_subnets[*].id
+  private_subnet_ids = aws_subnet.private_subnets[*].id
+}
+
 
 # Internet Gateway
 resource "aws_internet_gateway" "main_igw" {
@@ -67,8 +62,6 @@ resource "aws_internet_gateway" "main_igw" {
 # Elastic IP for NAT Gateway
 resource "aws_eip" "nat_eip" {
   count = 2
-  domain = "vpc"
-
   tags = {
     Name = "${var.app_name}-nat-eip-${count.index + 1}"
   }
@@ -128,12 +121,16 @@ resource "aws_route_table_association" "private_subnet_association" {
   route_table_id = aws_route_table.private_route_tables[count.index].id
 }
 
-data "aws_lb" "main" {
-  name = "${var.app_name}-alb"
+resource "aws_lb" "main" {
+  name               = "${var.app_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.public_subnets[*].id
+  enable_deletion_protection = false
 }
-
 locals {
-  internal_alb_dns = data.aws_lb.main.dns_name
+  internal_alb_dns = aws_lb.main.dns_name
 }
 
 resource "aws_security_group" "alb_sg" {
@@ -229,13 +226,7 @@ resource "aws_security_group" "ecs_sg" {
     Name = "${var.app_name}-ecs-security-group"
   }
 }
-resource "aws_lb" "main" {
-  name               = "${var.app_name}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = aws_subnet.public_subnets[*].id
-}
+
 
 resource "aws_lb_target_group" "frontend" {
   name        = "frontend-tg"
@@ -296,12 +287,12 @@ resource "aws_ecs_service" "service" {
   launch_type     = "FARGATE"
   desired_count   = each.value.desired_count
   network_configuration {
-    subnets          = each.value.is_public == true ? var.public_subnet_ids : var.private_subnet_ids
+    subnets          = each.value.is_public == true ? local.public_subnet_ids : local.private_subnet_ids
     assign_public_ip = each.value.is_public
-    security_groups  = var.security_group_ids
+    security_groups  = [aws_security_group.ecs_sg.id]
   }
   load_balancer {
-    target_group_arn = var.target_group_arns[each.key].arn
+    target_group_arn = each.key == "frontend" ? aws_lb_target_group.frontend.arn : aws_lb_target_group.backend.arn
     container_name   = each.key
     container_port   = each.value.container_port
   }
@@ -310,7 +301,7 @@ resource "aws_ecs_service" "service" {
 resource "aws_ecs_task_definition" "ecs_task_definition" {
   for_each = var.ecs_services
   family                   = "${lower(var.app_name)}-${each.key}"
-  execution_role_arn       = var.ecs_role_arn
+  execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   memory                   = each.value.memory
@@ -323,8 +314,8 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       memory    = each.value.memory
       essential = true
       environment = [
-        { name = "INTERNAL_ALB", value = var.internal_alb_dns },
-        { name = "SERVICE_HOST", value = var.internal_alb_dns },
+        { name = "INTERNAL_ALB", value = local.internal_alb_dns },
+        { name = "SERVICE_HOST", value = local.internal_alb_dns },
         { name = "SERVER_SERVLET_CONTEXT_PATH", value = each.value.is_public == true ? "/" : "/${each.key}" },
         { name = "SERVICES", value = "backend" },
         { name = "SERVICE", value = each.key },
