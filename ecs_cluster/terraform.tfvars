@@ -2,7 +2,6 @@ app_name = "project"
 
 ecs_services = {
   frontend = {
-    image          = "851725377346.dkr.ecr.eu-central-1.amazonaws.com/frontend:1.0.0"
     cpu            = 256
     memory         = 512
     container_port = 8080
@@ -18,7 +17,6 @@ ecs_services = {
     }
   }
   backend = {
-    image          = "851725377346.dkr.ecr.eu-central-1.amazonaws.com/backend:1.0.0"
     cpu            = 256
     memory         = 512
     container_port = 8080
