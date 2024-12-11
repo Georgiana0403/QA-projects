@@ -1,5 +1,5 @@
 provider "aws" {
-  region = "us-west-2"
+  region = "eu-central-1"
 }
 
 terraform {
@@ -15,60 +15,274 @@ terraform {
 # Data
 data "aws_region" "current" {}
 
-resource "aws_vpc" "geo-vpc" {
-    cidr_block = "10.10.0.0/16"
-  
+data "aws_availability_zones" "available" {
+  state = "available"
 }
-resource "aws_subnet" "subnet1" {
-    vpc_id = aws_vpc.geo-vpc.id
-    cidr_block = "10.10.1.0/24"
-    tags = {
-        Name = "subnet1"
-    }
-  
-}
-resource "aws_internet_gateway" "igw1" {
-    vpc_id = aws_vpc.geo-vpc.id
-    tags = {
-      Name = "igw1"
-    }
-  
-}
-resource "aws_route_table" "route1" {
-    vpc_id = aws_vpc.geo-vpc.id
-    route {
-        cidr_block = "0.0.0.0/0"
-        gateway_id = aws_internet_gateway.igw1.id
-    }
-    tags = {
-        Name = "route-table"
-    }
+# VPC Resources
+resource "aws_vpc" "main_vpc" {
+  cidr_block           = "10.10.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "${var.app_name}-vpc"
+  }
 }
 
-resource "aws_route_table_association" "route_table_association" {
-    subnet_id = aws_subnet.subnet1.id
-    route_table_id = aws_route_table.route1.id
-  
-}
-resource "aws_security_group" "sec-group" {
-    name = "sec-group"
-    description = "Allow TLS inbound traffic"
-    vpc_id = aws_vpc.geo-vpc.id
+# Public Subnets
+resource "aws_subnet" "public_subnets" {
+  count             = 2
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.10.${count.index + 1}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
 
-    ingress {
-        from_port = 22
-        to_port = 22
-        protocol = "tcp"
-        cidr_blocks = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = ["::/0"]
-    }
-    tags = {
-      Name = "allow this"
-    }
-  
+  tags = {
+    Name = "${var.app_name}-public-subnet-${count.index + 1}"
+  }
+
+  map_public_ip_on_launch = true
+}
+
+# Private Subnets
+resource "aws_subnet" "private_subnets" {
+  count             = 2
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "10.10.${count.index + 101}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+
+  tags = {
+    Name = "${var.app_name}-private-subnet-${count.index + 1}"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main_igw" {
+  vpc_id = aws_vpc.main_vpc.id
+
+  tags = {
+    Name = "${var.app_name}-igw"
+  }
+}
+
+# Elastic IP for NAT Gateway
+resource "aws_eip" "nat_eip" {
+  count = 2
+  domain = "vpc"
+
+  tags = {
+    Name = "${var.app_name}-nat-eip-${count.index + 1}"
+  }
+}
+
+# NAT Gateways
+resource "aws_nat_gateway" "nat_gw" {
+  count         = 2
+  allocation_id = aws_eip.nat_eip[count.index].id
+  subnet_id     = aws_subnet.public_subnets[count.index].id
+
+  tags = {
+    Name = "${var.app_name}-nat-gw-${count.index + 1}"
+  }
+}
+
+# Public Route Table
+resource "aws_route_table" "public_route_table" {
+  vpc_id = aws_vpc.main_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main_igw.id
+  }
+
+  tags = {
+    Name = "${var.app_name}-public-route-table"
+  }
+}
+
+# Public Subnet Associations
+resource "aws_route_table_association" "public_subnet_association" {
+  count          = 2
+  subnet_id      = aws_subnet.public_subnets[count.index].id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+# Private Route Tables
+resource "aws_route_table" "private_route_tables" {
+  count  = 2
+  vpc_id = aws_vpc.main_vpc.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat_gw[count.index].id
+  }
+
+  tags = {
+    Name = "${var.app_name}-private-route-table-${count.index + 1}"
+  }
+}
+
+# Private Subnet Associations
+resource "aws_route_table_association" "private_subnet_association" {
+  count          = 2
+  subnet_id      = aws_subnet.private_subnets[count.index].id
+  route_table_id = aws_route_table.private_route_tables[count.index].id
+}
+
+data "aws_lb" "main" {
+  name = "${var.app_name}-alb"
+}
+
+locals {
+  internal_alb_dns = data.aws_lb.main.dns_name
+}
+
+resource "aws_security_group" "alb_sg" {
+  name        = "${var.app_name}-alb-security-group"
+  description = "Security group for Application Load Balancer"
+  vpc_id      = aws_vpc.main_vpc.id
+
+  # Inbound rules
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Outbound rules
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-alb-security-group"
+  }
+}
+resource "aws_lb_listener" "frontend" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend.arn
+  }
+}
+
+resource "aws_lb_listener" "backend" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 8080
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+}
+# Security Group
+resource "aws_security_group" "ecs_sg" {
+  name        = "${var.app_name}-ecs-security-group"
+  description = "Security group for ECS cluster"
+  vpc_id      = aws_vpc.main_vpc.id
+
+  # Inbound rules
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Outbound rules
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.app_name}-ecs-security-group"
+  }
+}
+resource "aws_lb" "main" {
+  name               = "${var.app_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.public_subnets[*].id
+}
+
+resource "aws_lb_target_group" "frontend" {
+  name        = "frontend-tg"
+  port        = 8080
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main_vpc.id
+  target_type = "ip"
+}
+
+resource "aws_lb_target_group" "backend" {
+  name        = "backend-tg"
+  port        = 8080
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main_vpc.id
+  target_type = "ip"
 }
 
 # Resources
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "ecs-task-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  role       = aws_iam_role.ecs_task_execution_role.name
+}
+
+resource "aws_ecr_repository" "frontend" {
+  name = "frontend"
+}
+
+resource "aws_ecr_repository" "backend" {
+  name = "backend"
+}
 resource "aws_ecs_cluster" "ecs_cluster" {
   name = lower("${var.app_name}-cluster")
 }
