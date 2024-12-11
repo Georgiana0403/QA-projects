@@ -25,10 +25,7 @@ variable "private_subnet_cidrs" {
   type        = list(string)
   default     = ["10.10.101.0/24", "10.10.102.0/24"]
 }
-variable "ecs_role_arn" {
-  description = "IAM Role for ECS"
-  type        = string
-}
+
 variable "ecs_services" {
   type = map(object({
     image          = string
@@ -47,28 +44,8 @@ variable "ecs_services" {
     })
   }))
 }
-variable "internal_alb_dns" {
-  description = "Internal ALB DNS name"
-  type        = string
-}
-variable "private_subnet_ids" {
-  description = "List of Private VPC Subnet IDs"
-  type        = list(string)
-}
-variable "public_subnet_ids" {
-  description = "List of Public VPC Subnet IDs"
-  type        = list(string)
-}
-variable "security_group_ids" {
-  description = "List of EC2 Security Group IDs"
-  type        = list(string)
-}
-variable "target_group_arns" {
-  description = "Map of ALB Target Group ARNs"
-  type = map(object({
-    arn       = string
-  }))
-}
+
+
 # New variables for VPC configuration
 variable "enable_dns_hostnames" {
   description = "Enable DNS hostnames in the VPC"
