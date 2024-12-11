@@ -309,7 +309,7 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
   container_definitions = jsonencode([
     {
       name      = each.key
-      image     = each.value.image
+      image     = "nginx:latest"
       cpu       = each.value.cpu
       memory    = each.value.memory
       essential = true
