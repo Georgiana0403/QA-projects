@@ -2,6 +2,7 @@ app_name = "project"
 
 ecs_services = {
   frontend = {
+    image          ="paulbouwer/hello-kubernetes:1.10"
     cpu            = 256
     memory         = 512
     container_port = 8080
@@ -17,6 +18,7 @@ ecs_services = {
     }
   }
   backend = {
+    image          ="mendhak/http-https-echo:latest"
     cpu            = 256
     memory         = 512
     container_port = 8080
