@@ -145,6 +145,12 @@ resource "aws_security_group" "alb_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   ingress {
     from_port   = 443
@@ -199,6 +205,12 @@ resource "aws_security_group" "ecs_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port   = 8080  # Backend port
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    }
 
   ingress {
     from_port   = 443
@@ -230,10 +242,18 @@ resource "aws_security_group" "ecs_sg" {
 
 resource "aws_lb_target_group" "frontend" {
   name        = "frontend-tg"
-  port        = 8080
+  port        = 80
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main_vpc.id
   target_type = "ip"
+  health_check {
+    path                = "/health"  # Adjust to your application's health check endpoint
+    healthy_threshold   = 2
+    unhealthy_threshold = 10
+    timeout             = 60
+    interval            = 300
+    matcher             = "200-399"  # Expected HTTP status codes
+  }
 }
 
 resource "aws_lb_target_group" "backend" {
@@ -309,18 +329,16 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
   container_definitions = jsonencode([
     {
       name      = each.key
-      image     = "nginx:latest"
+      image     = var.container_images[each.key]
       cpu       = each.value.cpu
       memory    = each.value.memory
       essential = true
-      environment = [
-        { name = "INTERNAL_ALB", value = local.internal_alb_dns },
-        { name = "SERVICE_HOST", value = local.internal_alb_dns },
-        { name = "SERVER_SERVLET_CONTEXT_PATH", value = each.value.is_public == true ? "/" : "/${each.key}" },
-        { name = "SERVICES", value = "backend" },
-        { name = "SERVICE", value = each.key },
-        { name = "SERVICE_NAME", value = each.key }
-      ]
+      environment = each.key == "frontend" ? [
+      { 
+        name = "BACKEND_URL", 
+        value = "http://${local.internal_alb_dns}/backend" 
+      }
+      ] : [],
       portMappings = [
         {
           containerPort = each.value.container_port
