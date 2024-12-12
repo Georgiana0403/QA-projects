@@ -45,6 +45,17 @@ variable "ecs_services" {
   }))
 }
 
+variable "container_images" {
+  type = object({
+    frontend = string
+    backend = string
+  })
+  default = {
+    # Public images that can demonstrate API interactions
+    frontend = "paulbouwer/hello-kubernetes:1.10"
+    backend = "mendhak/http-https-echo:latest"
+  }
+}
 
 # New variables for VPC configuration
 variable "enable_dns_hostnames" {
